@@ -29,8 +29,10 @@ async def upload_invoice(file: UploadFile= File(...)):
             detail=f"Extension no permitida . Use: {allowed__extensions}"
         )
         
+if __name__ == "__main__":
     
-    return 
+
+ 
    
     
 
