@@ -3,7 +3,10 @@ from fastapi import FastAPI, File, UploadFile, HTTPException
 
 import os
 
-app = FastAPI()
+app = FastAPI(
+    title="Scanner API",
+    description="API para escanear facturas y extraer datos"
+)
 
 
 @app.post("/files")
@@ -25,6 +28,9 @@ async def upload_invoice(file: UploadFile= File(...)):
             status_code=400,
             detail=f"Extension no permitida . Use: {allowed__extensions}"
         )
+        
+    
+    return 
    
     
 
