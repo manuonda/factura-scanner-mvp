@@ -1,0 +1,30 @@
+# Dockerfile para el servicio OCR con Tesseract
+FROM python:3.11-slim
+
+# Instalar Tesseract y dependencias del sistema
+RUN apt-get update && apt-get install -y \
+    tesseract-ocr \
+    tesseract-ocr-spa \
+    tesseract-ocr-eng \
+    libgl1-mesa-glx \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
+    libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Configurar directorio de trabajo
+WORKDIR /app
+
+# Instalar dependencias Python
+RUN pip install fastapi uvicorn pytesseract opencv-python-headless pillow numpy
+
+# Copiar código del servicio OCR
+COPY ocr_service.py .
+
+# Exponer puerto
+EXPOSE 8001
+
+# Comando para ejecutar el servicio
+CMD ["python", "ocr_service.py"]

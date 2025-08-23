@@ -12,4 +12,6 @@ dependencies = [
     "pdfplumber>=0.11.7",
     "pillow>=11.3.0",
     "python-multipart>=0.0.20",
+    "pytesseract>=0.3.13",
+    "httpx>=0.28.1",
 ]

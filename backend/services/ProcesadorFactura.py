@@ -18,6 +18,9 @@ class ProcesadorFactura:
         """
         
         try:
+          os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "./facturacion-ocr.json"
+          print(f"GOOGLE_APPLICATION_CREDENTIALS: {os.environ['GOOGLE_APPLICATION_CREDENTIALS']}")
+          # Inicializar el cliente de Vision API
           print(f"Inicializando ProcesadorFactura")
           self.client = vision.ImageAnnotatorClient()  
         except Exception as ex:
@@ -38,7 +41,7 @@ class ProcesadorFactura:
          return texto_extraido;
             
         except Exception as e:
-            raise Exception(f"Error al procesar factura {filename}: {str(e)}").
+            raise Exception(f"Error al procesar factura {filename}: {str(e)}")
 
 
 
