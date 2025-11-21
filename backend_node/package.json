@@ -1,0 +1,42 @@
+{
+  "name": "factura-whatsapp",
+  "version": "1.0.0",
+  "description": "MVP - Escáner de facturas argentinas via WhatsApp",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "build": "tsc",
+    "build:watch": "tsc --watch",
+    "test:health": "curl -s http://localhost:3000/ | jq .",
+    "test:webhook": "curl -s 'http://localhost:3000/webhook?hub.mode=subscribe&hub.verify_token=factura-mvp-token&hub.challenge=test123'",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "keywords": [
+    "whatsapp",
+    "ocr",
+    "facturas",
+    "argentina",
+    "kapso"
+  ],
+  "author": "",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "@google/generative-ai": "^0.21.0",
+    "@hono/node-server": "^1.13.0",
+    "@kapso/whatsapp-cloud-api": "^0.1.1",
+    "dotenv": "^16.4.5",
+    "googleapis": "^144.0.0",
+    "hono": "^4.6.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}
