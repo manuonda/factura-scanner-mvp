@@ -4,7 +4,7 @@ import {Hono} from 'hono';
 import {logger} from 'hono/logger';
 import { time } from 'console';
 import { sendWhatsAppMessage ,downloadMedia, markAsRead} from './kapso.js';
-
+import { extractData } from './ocr.js';
 const app = new Hono();
 
 //Middleware de logging
@@ -37,47 +37,30 @@ app.get('/send-test-message', async (c) => {
 });
 
 // ============================================
-// RUTA 2: Webhook verificación (GET)
-// Meta/Kapso envía un GET para verificar tu endpoint
-// ============================================
-app.get('/webhook', (c) => {
-  const mode = c.req.query('hub.mode');
-  const token = c.req.query('hub.verify_token');
-  const challenge = c.req.query('hub.challenge');
-
-  // Token que vos definís (debe coincidir con el que configures en Kapso)
-  const VERIFY_TOKEN = process.env.WEBHOOK_VERIFY_TOKEN || 'factura-mvp-token';
-
-  console.log('🔐 Verificación webhook recibida');
-  console.log(`   Mode: ${mode}`);
-  console.log(`   Token: ${token}`);
-  console.log(`   Challenge: ${challenge}`);
-
-  if (mode === 'subscribe' && token === VERIFY_TOKEN) {
-    console.log('✅ Webhook verificado correctamente');
-    return c.text(challenge || '');
-  }
-
-  console.log('❌ Verificación fallida');
-  return c.text('Forbidden', 403);
-});
-
-// ============================================
 // RUTA 3: Webhook mensajes (POST)
 // Acá llegan los mensajes de WhatsApp
 // Soporta formato Kapso v2
 // ============================================
 app.post('/webhook', async (c) => {
+  console.log("Aqui ingreso para obtener la informacion");
   try {
     const body = await c.req.json();
     
     console.log('📨 Webhook POST recibido');
     console.log('   Tipo:', body.type);
 
+    // primero tendria que verificar si tengo registrado 
+    // el usuario en mi base de datos
+    
     // Formato Kapso v2
     if (body.type === 'whatsapp.message.received' && body.data) {
       for (const item of body.data) {
         if (item.message) {
+          // DEBUG: ver estructura completa
+          if (item.message.type === 'image') {
+            console.log('🔍 [DEBUG] Estructura del mensaje de imagen:');
+            console.log(JSON.stringify(item.message, null, 2));
+          }
           await processMessage(item.message);
         }
       }
@@ -90,14 +73,14 @@ app.post('/webhook', async (c) => {
       return c.json({ status: 'ignored', event: body.type });
     }
 
-    // Formato Meta original (por si acaso)
-    const messages = body.entry?.[0]?.changes?.[0]?.value?.messages;
-    if (messages && messages.length > 0) {
-      for (const message of messages) {
-        await processMessage(message);
-      }
-      return c.json({ status: 'processed' });
-    }
+    // // Formato Meta original (por si acaso)
+    // const messages = body.entry?.[0]?.changes?.[0]?.value?.messages;
+    // if (messages && messages.length > 0) {
+    //   for (const message of messages) {
+    //     await processMessage(message);
+    //   }
+    //   return c.json({ status: 'processed' });
+    // }
 
     return c.json({ status: 'no_messages' });
   } catch (error) {
@@ -116,11 +99,13 @@ interface WhatsAppMessage {
   type: string;
   timestamp?: string;
   text?: { body: string };
-  image?: { id: string; mime_type?: string };
-  document?: { id: string; mime_type?: string; filename?: string };
+  image?: { id: string; mime_type?: string; link?: string };
+  document?: { id: string; mime_type?: string; filename?: string; link?: string };
   kapso?: {
     direction: string;
     has_media: boolean;
+    media_url?: string;
+    media_data?: { url?: string };
   };
 }
 
@@ -128,22 +113,27 @@ async function processMessage(message: WhatsAppMessage) {
   const from = message.from;  // Número del remitente
   const messageId = message.id;
   
+  console.log('==== Procesar Messages =====')
   console.log(`\n📱 Mensaje recibido:`);
   console.log(`   De: ${from}`);
   console.log(`   Tipo: ${message.type}`);
   console.log(`   ID: ${messageId}`);
 
   // Marcar como leído (opcional, mejora UX)
-  await markAsRead(messageId);
+  //await markAsRead(messageId);
 
+  console.log(`Tipo de message es: ${message.type}`);
   // Procesar según el tipo de mensaje
   switch (message.type) {
     case 'text':
+      console.log(`Texto: "${message.text?.body || ''}"`);
       await handleTextMessage(from, message.text?.body || '');
       break;
 
     case 'image':
-      await handleImageMessage(from, message.image!.id);
+      console.log(`Procesando imagen...`);
+      const imageUrl = message.kapso?.media_url || message.image?.link;
+      await handleImageMessage(from, imageUrl || message.image!.id);
       break;
 
     case 'document':
@@ -173,10 +163,12 @@ async function processMessage(message: WhatsAppMessage) {
  * Maneja mensajes de texto
  */
 async function handleTextMessage(from: string, text: string) {
-  console.log(`   Texto: "${text}"`);
+  console.log(`De: ${from}`);
+  console.log(`Texto: "${text}"`);
 
   // Comandos simples
   const lowerText = text.toLowerCase().trim();
+  
 
   if (lowerText === 'hola' || lowerText === 'hi' || lowerText === 'hello') {
     await sendWhatsAppMessage(
@@ -209,42 +201,35 @@ async function handleTextMessage(from: string, text: string) {
 
 /**
  * Maneja mensajes con imagen (o PDF)
+ * @param urlOrMediaId - URL pública de Kapso o mediaId como fallback
  */
-async function handleImageMessage(from: string, mediaId: string) {
-  console.log(`   Media ID: ${mediaId}`);
+async function handleImageMessage(from: string, urlOrMediaId: string) {
+  const isUrl = urlOrMediaId.startsWith('http');
+  console.log(`${isUrl ? '🔗 URL' : '📱 MediaId'}: ${isUrl ? urlOrMediaId.substring(0, 60) + '...' : urlOrMediaId}`);
 
   try {
     // 1. Notificar que estamos procesando
     await sendWhatsAppMessage(from, '⏳ Procesando tu factura...');
 
-    // 2. Descargar la imagen
-    console.log('📥 Descargando imagen...');
-    // const imageBuffer = await downloadMedia(mediaId);
-    // console.log(`✅ Imagen descargada: ${imageBuffer.length} bytes`);
+    // 2. Procesar con OCR
+    console.log('📤 Enviando a Gemini para OCR...');
+    const invoiceData = await extractData(urlOrMediaId);
 
     // 3. TODO: Procesar con OCR (Gemini)
     // Por ahora simulamos el resultado
-    const invoiceData = {
-      proveedor: 'Empresa Demo S.A.',
-      cuit: '30-12345678-9',
-      fecha: '15/11/2025',
-      numeroFactura: 'A 0001-00012345',
-      total: 15000.50,
-      iva: 3150.11,
-    };
-
+   
     // 4. TODO: Guardar en Google Sheets
     console.log('📊 Datos extraídos:', invoiceData);
 
     // 5. Responder con los datos
     const responseMessage = 
       `✅ *¡Factura procesada!*\n\n` +
-      `📋 *Proveedor:* ${invoiceData.proveedor}\n` +
-      `🔢 *CUIT:* ${invoiceData.cuit}\n` +
-      `📄 *Nro Factura:* ${invoiceData.numeroFactura}\n` +
-      `📅 *Fecha:* ${invoiceData.fecha}\n` +
-      `💰 *Total:* $${invoiceData.total.toLocaleString('es-AR')}\n` +
-      `📊 *IVA:* $${invoiceData.iva.toLocaleString('es-AR')}\n\n` +
+      `📋 *Proveedor:* ${invoiceData.data?.proveedor || 'Desconocido'}\n` +
+      `🔢 *CUIT:* ${invoiceData.data?.cuit || 'Desconocido'}\n` +
+      `📄 *Nro Factura:* ${invoiceData.data?.numeroFactura || 'Desconocido'}\n` +
+      `📅 *Fecha:* ${invoiceData.data?.fecha || 'Desconocido'}\n` +
+      `💰 *Total:* $${invoiceData.data?.total?.toLocaleString('es-AR') || '0'}\n` +
+      `📊 *IVA:* $${invoiceData.data?.iva?.toLocaleString('es-AR') || '0'}\n\n` +
       `_Datos guardados en tu planilla_ ✨`;
 
     await sendWhatsAppMessage(from, responseMessage);

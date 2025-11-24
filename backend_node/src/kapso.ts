@@ -89,24 +89,76 @@ export async function downloadMedia(mediaId: string) {
   }
 
   try {
-    const whatsapp = getClient();
+    // const whatsapp = getClient(); // No usamos el SDK para esto por ahora
 
-    // El SDK tiene un método para descargar media
-    const arrayBuffer = await whatsapp.media.download({
-      mediaId,
-      phoneNumberId,
+    console.log(`📥 Iniciando descarga manual para: ${mediaId}`);
+
+    // 1. Obtener URL usando la API de Kapso directamente (bypass SDK)
+    // Documentación: https://docs.kapso.ai/api/meta/whatsapp/media/get-media-url
+    // IMPORTANTE: Kapso requiere phone_number_id como query param
+    const kapsoUrl = `https://api.kapso.ai/meta/whatsapp/v21.0/${mediaId}?phone_number_id=${phoneNumberId}`;
+    
+    console.log(`🔍 Consultando Kapso API: ${kapsoUrl}`);
+
+    const metadataResponse = await fetch(kapsoUrl, {
+      headers: {
+        'Authorization': `Bearer ${process.env.KAPSO_API_KEY}`, // Kapso usa Bearer token
+        'Content-Type': 'application/json'
+      }
     });
 
-    console.log(`📥 Media descargado: ${mediaId}`);
+    if (!metadataResponse.ok) {
+       const errorText = await metadataResponse.text();
+       throw new Error(`Error obteniendo metadata de Kapso (${metadataResponse.status}): ${errorText}`);
+    }
+
+    const metadata = await metadataResponse.json();
+    const downloadUrl = metadata.url;
+
+    if (!downloadUrl) {
+      throw new Error('❌ La API de Kapso no devolvió una URL de descarga.');
+    }
+
+    console.log(`🔗 URL de descarga obtenida: ${downloadUrl}`);
+
+    // 2. Descargar usando fetch nativo
+    const headers: Record<string, string> = {
+      'User-Agent': 'factura-scanner-bot/1.0'
+    };
+
+    // Si es lookaside, probamos SIN auth primero (ya que falló con auth)
+    // Pero si la URL viene de Kapso, confiamos en ella.
+    if (!downloadUrl.includes('lookaside.fbsbx.com')) {
+       headers['Authorization'] = `Bearer ${process.env.KAPSO_API_KEY}`;
+    } else {
+       // Si es lookaside, intentamos SIN auth primero, ya que suele estar firmada
+       console.log('ℹ️ URL de lookaside detectada, omitiendo header Authorization');
+    }
+
+    const response = await fetch(downloadUrl, { headers });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Falló la descarga HTTP ${response.status}: ${errorText}`);
+    }
+
+    const arrayBuffer = await response.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+
+    console.log(`✅ Descarga exitosa: ${buffer.length} bytes`);
     
-    // Convertir ArrayBuffer a Buffer de Node.js
-    //return Buffer.from(arrayBuffer);
+    // Validación final de tamaño
+    if (buffer.length < 100) {
+       console.warn('⚠️ ALERTA: El archivo descargado es sospechosamente pequeño.');
+       console.log('Contenido:', buffer.toString());
+    }
+
+    return buffer;
   } catch (error) {
     console.error('❌ Error descargando media:', error);
     throw error;
   }
 }
-
 /**
  * Obtiene información de un media (URL, tipo, tamaño)
  */
@@ -157,12 +209,14 @@ export async function sendImage(
   try {
     const whatsapp = getClient();
 
-    // await whatsapp.messages.sendImage({
-    //   phoneNumberId,
-    //   to,
-    //   url: imageUrl,
-    //   caption,
-    // });
+    await whatsapp.messages.sendImage({
+      phoneNumberId,
+      to,
+      image: {
+        link: imageUrl,
+        caption,
+      }
+    });
 
     console.log(`📤 Imagen enviada a ${to}`);
   } catch (error) {
