@@ -456,3 +456,6 @@ $6.70/mes para MVP (66 usuarios × 10 facturas)
 
 FIN DEL DOCUMENTO
 Guarda este archivo como DOCUMENTACION_COMPLETA.md
+
+
+  npm run db:generate && npm run db:push && npm run dev

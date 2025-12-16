@@ -7,6 +7,12 @@ import { sendWhatsAppMessage ,downloadMedia, markAsRead} from './kapso.js';
 import { extractData } from './ocr.js';
 import { UserRepository } from './repositories/user.repository.js';
 import { UserService } from './services/user.service.js';
+import {
+    verifyKapsoSignature,
+    isWebhookProcessed,
+    markWebhookAsProcessed,
+    logWebhookEvent
+} from './utils/kapso-webhook.js';
 
 
 const userRepository = new UserRepository();
@@ -30,31 +36,50 @@ app.get('/', (c) => {
     });
 });
 
-app.get('/send-test-message', async (c) => {
-    const testPhoneNumber = process.env.TEST_PHONE_NUMBER;
-    if (!testPhoneNumber) {
-        return c.json({ error: 'Falta TEST_PHONE_NUMBER en las variables de entorno' }, 500);
-    }
 
-    try {
-        await sendWhatsAppMessage(testPhoneNumber, 'Mensaje de prueba desde factura-scanner 🚀');
-        return c.json({ status: 'Mensaje de prueba enviado correctamente' });
-    } catch (error) {
-        return c.json({ error: 'Error enviando el mensaje de prueba' }, 500);
-    }
-});
 
 // ============================================
 // RUTA 3: Webhook mensajes (POST)
 // Acá llegan los mensajes de WhatsApp
 // Soporta formato Kapso v2
+// Incluye validación de firma y deduplicación
 // ============================================
 app.post('/webhook', async (c) => {
   try {
-    const body = await c.req.json();
+    // 1. Obtener headers de seguridad
+    const signature = c.req.header('X-Webhook-Signature');
+    const idempotencyKey = c.req.header('X-Idempotency-Key');
+    const kapsoSecret = process.env.KAPSO_WEBHOOK_SECRET;
 
-      
-    // Extraer el mensaje correctamente (soporte para batch/data array)
+    // 2. Validar headers requeridos
+    if (!signature || !idempotencyKey) {
+      console.warn('⚠️ Headers de seguridad faltantes');
+      return c.json({ error: 'Missing security headers' }, 400);
+    }
+
+    // 3. Verificar deduplicación (evitar procesar el mismo webhook 3 veces)
+    if (isWebhookProcessed(idempotencyKey)) {
+      console.log(`⏭️ Webhook duplicado ignorado: ${idempotencyKey}`);
+      return c.json({ status: 'duplicate_ignored' }, 200);
+    }
+
+    // 4. Leer body como string para verificar firma
+    const bodyText = await c.req.text();
+
+    // 5. Verificar firma HMAC-SHA256
+    if (kapsoSecret && !verifyKapsoSignature(bodyText, signature, kapsoSecret)) {
+      console.error('❌ Firma de webhook inválida');
+      return c.json({ error: 'Invalid signature' }, 401);
+    }
+
+    // 6. Parsear JSON después de verificar firma
+    const body = JSON.parse(bodyText);
+
+    // 7. Marcar como procesado
+    markWebhookAsProcessed(idempotencyKey);
+    logWebhookEvent('message_received', idempotencyKey, 'received');
+
+    // 8. Extraer el mensaje correctamente (soporte para batch/data array)
     // Si viene en batch (data array), tomamos el primero. Si no, usamos el body directo.
     const item = body.data?.[0] || body;
     const message = item.message;
@@ -67,23 +92,29 @@ app.post('/webhook', async (c) => {
       console.log(`   Teléfono: ${conversation?.phone_number}`);
       console.log(`   Tipo: ${message.type}`);
 
-      await processMessage(message, conversation);
+      // Procesar en background para responder rápido (< 10 segundos)
+      processMessage(message, conversation).catch(error => {
+        logWebhookEvent('message_process', idempotencyKey, 'error', { error: String(error) });
+      });
 
-      return c.json({ status: 'processed' });
+      // Responder inmediatamente al webhook (< 10s)
+      logWebhookEvent('message_process', idempotencyKey, 'processed');
+      return c.json({ status: 'processed' }, 200);
     }
 
     // ===== IGNORAR MENSAJES OUTBOUND (del bot) =====
     if (message && message.kapso?.direction === 'outbound') {
       console.log(`   ⏭️ Mensaje OUTBOUND ignorado (es del bot)`);
-      return c.json({ status: 'outbound_ignored' });
+      logWebhookEvent('message_outbound', idempotencyKey, 'processed');
+      return c.json({ status: 'outbound_ignored' }, 200);
     }
 
     console.log('   Sin mensaje para procesar');
-    return c.json({ status: 'no_messages' });
+    return c.json({ status: 'no_messages' }, 200);
 
   } catch (error) {
     console.error('❌ Error procesando webhook:', error);
-    return c.json({ status: 'error' }, 500);
+    return c.json({ status: 'error', message: String(error) }, 500);
   }
 });
 
@@ -111,22 +142,36 @@ async function processMessage(message: WhatsAppMessage, conversation?: any) {
   // Obtener número desde conversation (más confiable) o desde message.from
   const from = conversation?.phone_number || message.from;
   const messageId = message.id;
-  
+
   console.log('==== Procesar Messages =====')
   console.log(`\n📱 Mensaje recibido:`);
   console.log(`   De: ${from}`);
   console.log(`   Tipo: ${message.type}`);
   console.log(`   ID: ${messageId}`);
 
-  const {isNew, user} = await userService.getOrCreateUser(from);
-  if (isNew) {
-    console.log(`   Nuevo usuario creado con phoneNumber: ${from}`);
-  } else {
-    console.log(`   Usuario existente encontrado con phoneNumber: ${from}`);
+  // Procesar usuario y obtener estado del flujo
+  const processingResult = await userService.procesarUsuario(from);
+  console.log(`   Estado: ${processingResult.state}`);
+
+  // Si el usuario no está listo (NEW o INCOMPLETE), procesar registro
+  if (processingResult.state !== 'READY') {
+    console.log(`   → Flujo de registro activo, paso: ${processingResult.nextStep}`);
+    // Solo procesar textos durante el registro
+    if (message.type === 'text') {
+      const textContent = message.text?.body || '';
+      if (textContent.trim()) {
+        const registrationResult = await userService.processRegistrationData(from, textContent);
+        await sendWhatsAppMessage(from, registrationResult.message);
+        return;
+      }
+    }
+    // Si no es texto o está vacío, enviar el mensaje del paso actual
+    await sendWhatsAppMessage(from, processingResult.message);
+    return;
   }
 
   console.log(`Tipo de message es: ${message.type}`);
-  // Procesar según el tipo de mensaje
+  // Procesar según el tipo de mensaje (solo si usuario está READY)
   switch (message.type) {
     case 'text':
       console.log(`Texto: "${message.text?.body || ''}"`);
@@ -164,24 +209,14 @@ async function processMessage(message: WhatsAppMessage, conversation?: any) {
 
 /**
  * Maneja mensajes de texto
+ * Solo se ejecuta si el usuario está READY (registro completo)
  */
 async function handleTextMessage(from: string, text: string) {
   console.log(`De: ${from}`);
   console.log(`Texto: "${text}"`);
 
-  // Comandos simples
+  // Comandos de ayuda
   const lowerText = text.toLowerCase().trim();
-  
-
-  if (lowerText === 'hola' || lowerText === 'hi' || lowerText === 'hello') {
-    await sendWhatsAppMessage(
-      from,
-      '👋 ¡Hola! Soy el bot de facturas.\n\n' +
-      'Enviame una *foto* o *PDF* de tu factura y la proceso automáticamente.\n\n' +
-      'Los datos se guardan en tu Google Sheets.'
-    );
-    return;
-  }
 
   if (lowerText === 'ayuda' || lowerText === 'help') {
     await sendWhatsAppMessage(
@@ -189,13 +224,12 @@ async function handleTextMessage(from: string, text: string) {
       '📋 *Comandos disponibles:*\n\n' +
       '• Enviar foto → Proceso la factura\n' +
       '• Enviar PDF → Proceso la factura\n' +
-      '• "hola" → Mensaje de bienvenida\n' +
       '• "ayuda" → Este mensaje'
     );
     return;
   }
 
-  // Mensaje por defecto
+  // Si es cualquier otro texto, recordar enviar factura
   await sendWhatsAppMessage(
     from,
     '📄 Enviame una *foto* o *PDF* de tu factura y la proceso automáticamente.'

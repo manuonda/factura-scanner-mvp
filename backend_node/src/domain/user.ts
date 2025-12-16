@@ -44,18 +44,18 @@
     static create(data: any): User {
       return new User(
         data.id,
-        data.phone_number,
-        data.name,
-        data.company_name,
+        data.phoneNumber || data.phone_number,
+        data.userName || data.user_name,        // Prisma devuelve userName, BD tiene user_name
+        data.companyName || data.company_name,
         data.email,
-        data.plan_type,
+        data.planType || data.plan_type,
         data.status,
-        data.email_verified,
-        data.phone_verified,
-        data.registration_complete,
-        data.created_at,
-        data.updated_at,
-        data.last_activity,
+        data.emailVerified || data.email_verified,
+        data.phoneVerified || data.phone_verified,
+        data.registrationComplete || data.registration_complete,
+        data.createdAt || data.created_at,
+        data.updatedAt || data.updated_at,
+        data.lastActivity || data.last_activity,
         data.preferences,
         data.metadata
       );

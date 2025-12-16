@@ -20,7 +20,7 @@ export class UserRepository {
     async create(dto: CreateUserDTO): Promise<User> {
         try { 
             const data = await prisma.user.create({
-                data: { 
+                data: {
                     // Mapeamos el DTO a las propiedades del modelo Prisma
                     phoneNumber: dto.phoneNumber,
                     userName: dto.userName,
@@ -42,6 +42,24 @@ export class UserRepository {
             return User.create(data);
         }catch(error) {
             console.error('Error creando usuario: ', error);
+            throw error;
+        }
+    }
+
+    async updateByPhoneNumber(phoneNumber: string, updates: Partial<{
+        userName: string;
+        companyName: string;
+        email: string;
+        registrationComplete: boolean;
+    }>): Promise<User> {
+        try {
+            const data = await prisma.user.update({
+                where: { phoneNumber: phoneNumber },
+                data: updates
+            });
+            return User.create(data);
+        } catch (error) {
+            console.error('Error actualizando usuario:', error);
             throw error;
         }
     }
