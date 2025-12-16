@@ -12,6 +12,11 @@ export interface InvoiceData {
     total: number | null;
     iva: number | null;
   };
+  usage?: {
+    promptTokens: number | undefined;
+    completionTokens: number | undefined;
+    totalTokens: number | undefined;
+  };
 }
 
 let getGeminiClient: GoogleGenAI | null = null;
@@ -112,13 +117,19 @@ export async function extractData(
         }
 
         const parseData = JSON.parse(resultText) as InvoiceData;
-        // if(response.usageMetadata){
-        //     parseData.usage = {
-        //         promptTokens: response.usageMetadata.promptTokens,
-        //         completionTokens: response.usageMetadata.completionTokens,
-        //         totalTokens: response.usageMetadata.totalTokens
-        //     }
-        // }
+        console.log("resultText:", response);
+       if (response.usageMetadata) {
+          console.log("usageMetadata:", response.usageMetadata);
+          console.log("response.usageMetadata.promptTokenCount:", response.usageMetadata.promptTokenCount);
+          console.log("response.usageMetadata.candidatesTokenCount:", response.usageMetadata.candidatesTokenCount);
+          console.log("response.usageMetadata.totalTokenCount:", response.usageMetadata.totalTokenCount);
+          parseData.usage = {
+        // Mapeamos a los campos correctos (terminan en 'Count')
+          promptTokens: response.usageMetadata.promptTokenCount,
+          completionTokens: response.usageMetadata.candidatesTokenCount, // La salida se llama candidatesTokenCount
+          totalTokens: response.usageMetadata.totalTokenCount
+       };
+}
         return parseData;
 
     } catch (error) {

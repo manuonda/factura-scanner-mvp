@@ -12,7 +12,17 @@
     "test:health": "curl -s http://localhost:3000/ | jq .",
     "test:webhook": "curl -s 'http://localhost:3000/webhook?hub.mode=subscribe&hub.verify_token=factura-mvp-token&hub.challenge=test123'",
     "typecheck": "tsc --noEmit",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "db:generate": "prisma generate",
+    "db:migrate": "prisma migrate dev",
+    "db:migrate:deploy": "prisma migrate deploy",
+    "db:push": "prisma db push",
+    "db:studio": "prisma studio",
+    "db:seed": "tsx prisma/seed.ts",
+    "db:reset": "prisma migrate reset --force",
+    "docker:up": "docker-compose up -d",
+    "docker:down": "docker-compose down",
+    "docker:logs": "docker-compose logs -f postgres"
   },
   "keywords": [
     "whatsapp",
@@ -31,13 +41,18 @@
     "@google/generative-ai": "^0.21.0",
     "@hono/node-server": "^1.13.0",
     "@kapso/whatsapp-cloud-api": "^0.1.1",
-    "dotenv": "^16.4.5",
+    "@prisma/adapter-pg": "^7.1.0",
+    "@prisma/client": "^7.1.0",
+    "dotenv": "^16.6.1",
     "googleapis": "^144.0.0",
-    "hono": "^4.6.0"
+    "hono": "^4.6.0",
+    "pg": "^8.16.3"
   },
   "devDependencies": {
-    "@types/node": "^22.0.0",
+    "@types/node": "^22.19.2",
+    "@types/pg": "^8.16.0",
+    "prisma": "^7.1.0",
     "tsx": "^4.19.0",
-    "typescript": "^5.6.0"
+    "typescript": "^5.9.3"
   }
 }

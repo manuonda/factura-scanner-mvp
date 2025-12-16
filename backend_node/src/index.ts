@@ -5,6 +5,14 @@ import {logger} from 'hono/logger';
 import { time } from 'console';
 import { sendWhatsAppMessage ,downloadMedia, markAsRead} from './kapso.js';
 import { extractData } from './ocr.js';
+import { UserRepository } from './repositories/user.repository.js';
+import { UserService } from './services/user.service.js';
+
+
+const userRepository = new UserRepository();
+const userService = new UserService(userRepository);
+
+
 const app = new Hono();
 
 //Middleware de logging
@@ -42,47 +50,37 @@ app.get('/send-test-message', async (c) => {
 // Soporta formato Kapso v2
 // ============================================
 app.post('/webhook', async (c) => {
-  console.log("Aqui ingreso para obtener la informacion");
   try {
     const body = await c.req.json();
-    
-    console.log('📨 Webhook POST recibido');
-    console.log('   Tipo:', body.type);
 
-    // primero tendria que verificar si tengo registrado 
-    // el usuario en mi base de datos
-    
-    // Formato Kapso v2
-    if (body.type === 'whatsapp.message.received' && body.data) {
-      for (const item of body.data) {
-        if (item.message) {
-          // DEBUG: ver estructura completa
-          if (item.message.type === 'image') {
-            console.log('🔍 [DEBUG] Estructura del mensaje de imagen:');
-            console.log(JSON.stringify(item.message, null, 2));
-          }
-          await processMessage(item.message);
-        }
-      }
+      
+    // Extraer el mensaje correctamente (soporte para batch/data array)
+    // Si viene en batch (data array), tomamos el primero. Si no, usamos el body directo.
+    const item = body.data?.[0] || body;
+    const message = item.message;
+    const conversation = item.conversation;
+
+    // ===== SOLO PROCESAR MENSAJES INBOUND (del usuario) =====
+    // Ignorar OUTBOUND (mensajes que envía el bot)
+    if (message && message.kapso?.direction === 'inbound') {
+      console.log(`   ✅ Mensaje INBOUND de usuario`);
+      console.log(`   Teléfono: ${conversation?.phone_number}`);
+      console.log(`   Tipo: ${message.type}`);
+
+      await processMessage(message, conversation);
+
       return c.json({ status: 'processed' });
     }
 
-    // Otros eventos de Kapso (conversation.created, message.delivered, etc.)
-    if (body.type) {
-      console.log(`   Evento ignorado: ${body.type}`);
-      return c.json({ status: 'ignored', event: body.type });
+    // ===== IGNORAR MENSAJES OUTBOUND (del bot) =====
+    if (message && message.kapso?.direction === 'outbound') {
+      console.log(`   ⏭️ Mensaje OUTBOUND ignorado (es del bot)`);
+      return c.json({ status: 'outbound_ignored' });
     }
 
-    // // Formato Meta original (por si acaso)
-    // const messages = body.entry?.[0]?.changes?.[0]?.value?.messages;
-    // if (messages && messages.length > 0) {
-    //   for (const message of messages) {
-    //     await processMessage(message);
-    //   }
-    //   return c.json({ status: 'processed' });
-    // }
-
+    console.log('   Sin mensaje para procesar');
     return c.json({ status: 'no_messages' });
+
   } catch (error) {
     console.error('❌ Error procesando webhook:', error);
     return c.json({ status: 'error' }, 500);
@@ -109,8 +107,9 @@ interface WhatsAppMessage {
   };
 }
 
-async function processMessage(message: WhatsAppMessage) {
-  const from = message.from;  // Número del remitente
+async function processMessage(message: WhatsAppMessage, conversation?: any) {
+  // Obtener número desde conversation (más confiable) o desde message.from
+  const from = conversation?.phone_number || message.from;
   const messageId = message.id;
   
   console.log('==== Procesar Messages =====')
@@ -119,8 +118,12 @@ async function processMessage(message: WhatsAppMessage) {
   console.log(`   Tipo: ${message.type}`);
   console.log(`   ID: ${messageId}`);
 
-  // Marcar como leído (opcional, mejora UX)
-  //await markAsRead(messageId);
+  const {isNew, user} = await userService.getOrCreateUser(from);
+  if (isNew) {
+    console.log(`   Nuevo usuario creado con phoneNumber: ${from}`);
+  } else {
+    console.log(`   Usuario existente encontrado con phoneNumber: ${from}`);
+  }
 
   console.log(`Tipo de message es: ${message.type}`);
   // Procesar según el tipo de mensaje
