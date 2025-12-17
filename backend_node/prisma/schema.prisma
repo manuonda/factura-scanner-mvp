@@ -21,14 +21,14 @@ model User {
   userName      String?   @map("user_name")
   companyName   String?   @map("company_name")
   email         String?
-  
+
   planType      String    @default("free") @map("plan_type")
   status        String    @default("active") // active, inactive, banned
-  
+
   emailVerified Boolean   @default(false) @map("email_verified")
   phoneVerified Boolean   @default(true)  @map("phone_verified")
   registrationComplete Boolean @default(false) @map("registration_complete")
-  
+
   createdAt     DateTime  @default(now()) @map("created_at")
   updatedAt     DateTime  @updatedAt @map("updated_at")
   lastActivity  DateTime  @default(now()) @map("last_activity")
@@ -36,5 +36,48 @@ model User {
   preferences   Json?     @default("{}")
   metadata      Json?     @default("{}")
 
+  // Relación con documentos procesados
+  documents     DocumentProcessing[]
+
   @@map("users")
+}
+
+model DocumentProcessing {
+  id                String   @id @default(uuid())
+  userId            String   @map("user_id")
+  phoneNumber       String   @map("phone_number")
+  messageId         String   @unique @map("message_id") // wamid de Kapso
+
+  // Información del archivo
+  type              String   // 'image' | 'document'
+  filename          String
+  mimeType          String   @map("mime_type")
+  fileSize          Int?     @map("file_size")
+
+  // Estado del procesamiento
+  status            String   // 'pending' | 'processing' | 'success' | 'error' | 'failed_validation' | 'failed_401' | 'failed_404' | 'failed_download' | 'failed_ocr'
+
+  // URLs y metadatos
+  kapsoMediaUrl     String?  @map("kapso_media_url")
+
+  // Manejo de errores
+  errorCode         Int?     @map("error_code") // HTTP error codes: 401, 404, 500, etc
+  errorMessage      String?  @map("error_message")
+  retryCount        Int      @default(0) @map("retry_count")
+
+  // Resultado de la extracción OCR
+  extractionResult  Json?    @map("extraction_result")
+
+  // Timestamps
+  createdAt         DateTime @default(now()) @map("created_at")
+  processedAt       DateTime? @map("processed_at")
+
+  // Relación con User
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([phoneNumber])
+  @@index([status])
+  @@index([createdAt])
+  @@map("document_processing")
 }

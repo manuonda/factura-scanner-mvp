@@ -18,27 +18,27 @@ export class UserRepository {
     }
 
     async create(dto: CreateUserDTO): Promise<User> {
-        try { 
+        try {
             const data = await prisma.user.create({
                 data: {
                     // Mapeamos el DTO a las propiedades del modelo Prisma
                     phoneNumber: dto.phoneNumber,
-                    userName: dto.userName,
-                    companyName: dto.companyName,
-                    email: dto.email,
+                    userName: dto.userName || null,
+                    companyName: dto.companyName || null,
+                    email: dto.email || null,
                     planType: dto.planType || 'free',
 
                     // Valores por defecto o iniciales
                     status: 'active',
                     registrationComplete: false,
                     phoneVerified: true, // Asumimos verificado por WhatsApp
-                    
+
                     // JSON fields
                     preferences: {},
                     metadata: {}
                 }
             });
-            
+
             return User.create(data);
         }catch(error) {
             console.error('Error creando usuario: ', error);
