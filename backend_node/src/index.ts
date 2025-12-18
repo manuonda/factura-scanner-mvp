@@ -23,6 +23,7 @@ import {
     type KapsoMessage,
 } from './types/kapso.js';
 import { DocumentProcessingStatus, type ProcessDocumentResult } from './dtos/documento.dto.js';
+import type { User } from './domain/user.js';
 
 
 const userRepository = new UserRepository();
@@ -174,7 +175,7 @@ async function processMessage(message: KapsoMessage, conversation?: any) {
   switch (message.type) {
     case 'text':
       console.log(`Texto: "${message.text?.body || ''}"`);
-      await handleTextMessage(from, message.text?.body || '');
+      await handleTextMessage(from, message.text?.body || '', processingResult.user);
       break;
 
     case 'image':
@@ -184,15 +185,8 @@ async function processMessage(message: KapsoMessage, conversation?: any) {
       break;
 
     case 'document':
-      if (message.document?.mime_type === 'application/pdf') {
-        console.log(`Procesando documento PDF... : `, message );
-        await handleMediaMessage(userId, from, message);
-      } else {
-        await sendWhatsAppMessage(
-          from,
-          '⚠️ Solo puedo procesar *imágenes* o *PDFs* de facturas.'
-        );
-      }
+      console.log(`Procesando documento...`);
+      await handleMediaMessage(userId, from, message);
       break;
 
     default:
@@ -211,7 +205,7 @@ async function processMessage(message: KapsoMessage, conversation?: any) {
  * Maneja mensajes de texto
  * Solo se ejecuta si el usuario está READY (registro completo)
  */
-async function handleTextMessage(from: string, text: string) {
+async function handleTextMessage(from: string, text: string, user: User) {
   console.log(`De: ${from}`);
   console.log(`Texto: "${text}"`);
 
@@ -232,17 +226,18 @@ async function handleTextMessage(from: string, text: string) {
   // Si es cualquier otro texto, recordar enviar factura
   await sendWhatsAppMessage(
     from,
-    '📄 Enviame una *foto* o *PDF* de tu factura y la proceso automáticamente.'
+    `Hola ${user.name}, 📄 Enviame una *foto* o *PDF* de tu factura y la proceso automáticamente.`
   );
 }
 
 /**
  * Maneja mensajes de media (imagen o documento PDF)
  *
- * ⚡ FIRE AND FORGET PATTERN ⚡
- * - Responde inmediatamente al usuario
- * - Procesa en background sin bloquear el webhook
- * - El DocumentService se encarga de reintentos y tracking en BD
+ * 📤 NUEVO FLUJO OPTIMIZADO 📤
+ * 1. Validación rápida (< 100ms)
+ * 2. Procesar OCR con Gemini (5-10s) - SINCRÓNICO
+ * 3. Responder al usuario CON RESULTADO inmediatamente
+ * 4. Guardar en background (BD + archivo) SIN BLOQUEAR respuesta
  */
 async function handleMediaMessage(
   userId: string,
@@ -250,9 +245,10 @@ async function handleMediaMessage(
   message: KapsoMediaMessage
 ) {
   try {
-    // 1. Procesar documento (lanza en background, responde inmediatamente)
+    
     console.log(`📤 Iniciando procesamiento de ${message.id} para ${phoneNumber}`);
-    const result: ProcessDocumentResult = await documentService.processDocument({
+
+     const result: ProcessDocumentResult = await documentService.processDocument({
       userId,
       phoneNumber,
       message
@@ -269,30 +265,72 @@ async function handleMediaMessage(
       return;
     }
 
-    // 3. Si pasó validación rápida, responder que está en procesamiento
-    // El procesamiento real ocurre en background (OCR, BD, reintentos)
-    console.log(`✅ Documento aceptado, procesando en background...`);
+
+    const mediaUrl = extractMediaUrl(message);
+ 
+
+    // ============================================
+    // 2. NOTIFICAR QUE ESTÁ PROCESANDO
+    // ============================================
+    console.log(`✅ Documento validado, procesando con Gemini...`);
     await sendWhatsAppMessage(
       phoneNumber,
-      '⏳ Tu factura está siendo procesada...\n\nTe notificaré cuando esté lista. ⏰'
+      '⏳ Procesando tu factura...'
     );
 
-    // 4. El DocumentService está procesando en background:
-    //    - Validación completa
-    //    - Búsqueda de duplicados
-    //    - Creación en BD (estado PENDING)
-    //    - OCR con Gemini (puede tardar)
-    //    - Reintentos si falla
-    //    - Actualización de estado en BD
-    //
-    // Resultado final: usuario verá status actualizado en BD
-    // TODO: Implementar notificación cuando esté listo (webhook de status, polling, etc)
+    // ============================================
+    // 3. PROCESAR OCR CON GEMINI (5-10 segundos)
+    // ============================================
+    console.log('📤 Enviando a Gemini para OCR...');
+    const resultadoExtractData = await extractData(mediaUrl!);
+
+    console.log('📥 Resultado de OCR recibido de Gemini:', resultadoExtractData);
+    // ============================================
+    // 4. RESPONDER AL USUARIO CON RESULTADO
+    // ============================================
+    if (resultadoExtractData.isInvoice && resultadoExtractData.data) {
+      // ✅ ÉXITO: Factura procesada correctamente
+      const responseMessage =
+        `✅ *¡Factura procesada!*\n\n` +
+        `📋 *Proveedor:* ${resultadoExtractData.data.proveedor || 'Desconocido'}\n` +
+        `🔢 *CUIT:* ${resultadoExtractData.data.cuit || 'Desconocido'}\n` +
+        `📄 *Nro Factura:* ${resultadoExtractData.data.numeroFactura || 'Desconocido'}\n` +
+        `📅 *Fecha:* ${resultadoExtractData.data.fecha || 'Desconocido'}\n` +
+        `💰 *Total:* $${resultadoExtractData.data.total?.toLocaleString('es-AR') || '0'}\n` +
+        `📊 *IVA:* $${resultadoExtractData.data.iva?.toLocaleString('es-AR') || '0'}\n\n` +
+        `_Documento: ${resultadoExtractData.documentType} ✓_\n` +
+        `_Datos guardados en tu planilla_ ✨`;
+
+      // Logging detallado para debugging
+      console.log(`✅ Resultado procesado:`, {
+        documentType: resultadoExtractData.documentType,
+        fileInfo: resultadoExtractData.fileInfo,
+        tokens: resultadoExtractData.usage,
+        invoiceData: resultadoExtractData.data
+      });
+
+      await sendWhatsAppMessage(phoneNumber, responseMessage);
+    } else {
+      // ⚠️ ERROR: No es factura válida
+      const errorMessage = `⚠️ ${invoiceData.reason || 'No es una factura válida'}\n\nPor favor, envía una factura argentina.`;
+
+      // Logging del error
+      console.log(`⚠️ Validación fallida:`, {
+        documentType: invoiceData.documentType,
+        fileInfo: invoiceData.fileInfo,
+        reason: invoiceData.reason
+      });
+
+      await sendWhatsAppMessage(phoneNumber, errorMessage);
+    }
+
+  
 
   } catch (error) {
-    console.error('❌ Error inesperado en handleMediaMessage:', error);
+    console.error('❌ Error en handleMediaMessage:', error);
     await sendWhatsAppMessage(
       phoneNumber,
-      '❌ Ocurrió un error inesperado.\n\nPor favor, intenta de nuevo.'
+      '❌ Error procesando la factura.\n\nPor favor, intenta de nuevo.'
     );
   }
 }

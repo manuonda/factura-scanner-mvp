@@ -1,6 +1,28 @@
 /**
- * Servicio para procesamiento de documentos con manejo robusto de errores
- * y reintentos automáticos
+ * 📄 SERVICIO DE PROCESAMIENTO DE DOCUMENTOS
+ *
+ * ⚡ FIRE AND FORGET PATTERN ⚡
+ *
+ * Flujo de Procesamiento:
+ *
+ * 1. ✅ processDocument (< 100ms) - WEBHOOK HANDLER
+ *    └─ Validación rápida en memoria (sin BD)
+ *    └─ Lanza processInBackground SIN await
+ *    └─ Responde 200 OK al webhook inmediatamente
+ *
+ * 2. 🔄 processInBackground (BACKGROUND TASK)
+ *    └─ Buscar duplicados en BD
+ *    └─ Crear registro en BD (estado PENDING)
+ *    └─ Llamar processWithRetry
+ *       └─ downloadAndExtract (el OCR sucede aquí)
+ *          └─ extractData() - Llamada a Google Gemini (tarda 5-30s)
+ *          └─ Guardar resultado en BD
+ *    └─ Notificar usuario cuando esté listo
+ *
+ * 3. 🎯 Flujo de Errores
+ *    - Validación rápida fallida → Respuesta inmediata en webhook
+ *    - Error en OCR → Reintentos automáticos (max 3 intentos)
+ *    - Status actualizado en BD → Usuario puede consultarlo
  */
 
 import prisma from '../db/client.js';
@@ -64,15 +86,8 @@ export class DocumentService {
     const { userId, phoneNumber, message } = request;
     let success: boolean = true;
 
-    // ============================================
-    // VALIDACIÓN RÁPIDA (en memoria, sin BD)
-    // ============================================
-
-    // ============================================
-    // 1. VALIDACIÓN RÁPIDA (Fail Fast)
-    // ============================================
-
-    // A. Verificar existencia de media
+  
+    // Es de tipo media válida
     if (!isMediaMessage(message)) {
       success = false;
       return this.createErrorResult(
@@ -87,7 +102,7 @@ export class DocumentService {
     const mimeType = extractMimeType(message);
     const fileSize = extractFileSize(message);
 
-    // C. Validar URL, Tipo y Tamaño (Todo en memoria)
+    // Validar URL, Tipo y Tamaño (Todo en memoria)
     const validation = this.validateDocument(mediaUrl, mimeType, fileSize);
     
     if (!validation.isValid) {
@@ -123,7 +138,6 @@ export class DocumentService {
   /**
    * 🔄 PROCESAMIENTO EN BACKGROUND
    * Lógica pesada que corre sin bloquear el webhook
-   * Incluye: validación completa, OCR, BD, reintentos, notificaciones
    */
   private async processInBackground(
     request: ProcessDocumentRequest,
@@ -167,16 +181,6 @@ export class DocumentService {
       });
 
       console.log(`📝 [BACKGROUND] Documento creado en BD: ${document.id}`);
-
-      // ============================================
-      // PROCESAR CON REINTENTOS (OCR puede tardar)
-      // ============================================
-      await this.processWithRetry(
-        document.id,
-        mediaUrl,
-        phoneNumber,
-        DEFAULT_RETRY_CONFIG
-      );
 
     } catch (error) {
       console.error(`❌ [BACKGROUND] Error inesperado en ${messageId}:`, error);
@@ -230,80 +234,6 @@ export class DocumentService {
     return { isValid: true };
   }
 
-
-
-  
-
-  /**
-   * Procesa un documento con lógica de reintentos
-   * Se ejecuta en background sin bloquear la respuesta al webhook
-   */
-  private async processWithRetry(
-    documentId: string,
-    mediaUrl: string,
-    phoneNumber: string,
-    config: RetryConfig = DEFAULT_RETRY_CONFIG
-  ): Promise<void> {
-    let lastError: ProcessingError | undefined;
-
-    for (let attempt = 1; attempt <= config.maxAttempts; attempt++) {
-      try {
-        console.log(`   Intento ${attempt}/${config.maxAttempts}`);
-
-        // Actualizar estado a PROCESSING
-        await this.documentRepository.updateDocumentStatus(documentId, {
-          status: DocumentProcessingStatus.PROCESSING,
-          retryCount: attempt - 1,
-        } as any);
-
-        // Intentar descargar y procesar con OCR
-        const result = await this.downloadAndExtract(mediaUrl);
-
-        // Si fue exitoso, guardar resultado
-        await this.documentRepository.updateDocumentStatus(documentId, {
-          status: DocumentProcessingStatus.SUCCESS,
-          extractionResult: result,
-          processedAt: new Date(),
-        } as any);
-
-        console.log(`   ✅ Procesamiento exitoso de ${documentId}`);
-        return; // Éxito, salir del loop de reintentos
-
-      } catch (error) {
-        console.error(`   ❌ Error en intento ${attempt}:`, error);
-
-        // Analizar el error
-        lastError = this.analyzeError(error);
-
-        // Guardar error en BD
-        await this.documentRepository.updateDocumentStatus(documentId, {
-          status: this.getStatusFromError(lastError),
-          errorCode: typeof lastError.code === 'number' ? lastError.code : undefined,
-          errorMessage: lastError.message,
-          retryCount: attempt,
-        } as any);
-
-        // Si no es reintenTable, salir
-        if (!lastError.retryable) {
-          console.log(`   ℹ️ Error no reintenTable, abortando`);
-          return;
-        }
-
-        // Si no es el último intento, esperar antes de reintentar
-        if (attempt < config.maxAttempts) {
-          const delay = Math.min(
-            config.initialDelayMs * Math.pow(config.backoffMultiplier, attempt - 1),
-            config.maxDelayMs
-          );
-          console.log(`   ⏳ Esperando ${delay}ms antes de reintentar...`);
-          await this.sleep(delay);
-        }
-      }
-    }
-
-    // Si llegamos acá, todos los intentos fallaron
-    console.error(`❌ Todos los intentos fallaron para ${documentId}`);
-  }
 
   /**
    * Descarga y extrae datos del documento
@@ -454,7 +384,68 @@ export class DocumentService {
     return new Promise(resolve => setTimeout(resolve, ms));
   }
 
+  /**
+   * 💾 GUARDAR RESULTADO EN BACKGROUND (sin bloquear respuesta al usuario)
+   *
+   * Se ejecuta SIN AWAIT después de responder al usuario
+   * Guarda en BD el resultado del OCR y opcionalmente el archivo
+   */
+  async saveProcessingResult(data: {
+    userId: string;
+    phoneNumber: string;
+    message: any; // KapsoMediaMessage
+    invoiceData: InvoiceData;
+    mediaUrl: string;
+  }): Promise<void> {
+    const { userId, phoneNumber, message, invoiceData, mediaUrl } = data;
+
+    try {
+      console.log(`💾 [BACKGROUND] Guardando resultado de ${message.id}...`);
+
+      // ============================================
+      // 1. CREAR REGISTRO EN BD
+      // ============================================
+      const document = await this.documentRepository.createDocumentRecord({
+        userId,
+        phoneNumber,
+        messageId: message.id,
+        type: message.type,
+        filename: extractFilename(message),
+        mimeType: extractMimeType(message),
+        fileSize: extractFileSize(message),
+        kapsoMediaUrl: mediaUrl,
+      });
+
+      console.log(`   📝 Documento creado en BD: ${document.id}`);
+
+      // ============================================
+      // 2. ACTUALIZAR CON RESULTADO DE GEMINI
+      // ============================================
+      const finalStatus = invoiceData.isInvoice
+        ? DocumentProcessingStatus.SUCCESS
+        : DocumentProcessingStatus.FAILED_VALIDATION;
+
+      await this.documentRepository.updateDocumentStatus(document.id, {
+        status: finalStatus,
+        extractionResult: invoiceData,
+        processedAt: new Date(),
+        errorMessage: !invoiceData.isInvoice ? invoiceData.reason : null,
+      } as any);
+
+      console.log(`   ✅ Resultado guardado en BD: ${finalStatus}`);
+
+      // ============================================
+      // 3. TODO: GUARDAR ARCHIVO DESCARGADO (opcional)
+      // ============================================
+      // En el futuro, guardar en /uploads/{documentId}.pdf
+      // Por ahora, solo guardamos en BD
+
+    } catch (error) {
+      console.error(`❌ [BACKGROUND] Error guardando resultado:`, error);
+      // No re-lanzar el error porque esto se ejecuta sin await
+      // y queremos que el usuario ya tenga su respuesta
+    }
+  }
 
 
- 
 }
