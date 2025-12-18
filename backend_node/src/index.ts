@@ -185,7 +185,8 @@ async function processMessage(message: KapsoMessage, conversation?: any) {
       break;
 
     case 'document':
-      console.log(`Procesando documento...`);
+      console.log(`Procesando documento...: `, message);
+      console.log("===================");
       await handleMediaMessage(userId, from, message);
       break;
 
@@ -230,15 +231,7 @@ async function handleTextMessage(from: string, text: string, user: User) {
   );
 }
 
-/**
- * Maneja mensajes de media (imagen o documento PDF)
- *
- * 📤 NUEVO FLUJO OPTIMIZADO 📤
- * 1. Validación rápida (< 100ms)
- * 2. Procesar OCR con Gemini (5-10s) - SINCRÓNICO
- * 3. Responder al usuario CON RESULTADO inmediatamente
- * 4. Guardar en background (BD + archivo) SIN BLOQUEAR respuesta
- */
+
 async function handleMediaMessage(
   userId: string,
   phoneNumber: string,
@@ -248,22 +241,18 @@ async function handleMediaMessage(
     
     console.log(`📤 Iniciando procesamiento de ${message.id} para ${phoneNumber}`);
 
-     const result: ProcessDocumentResult = await documentService.processDocument({
-      userId,
-      phoneNumber,
-      message
-    });
+     const resultValidation = await documentService.validateDocumento(message);
+     if (!resultValidation.success) {
+       await sendWhatsAppMessage(
+         phoneNumber,
+         `⚠️ ${resultValidation.message}`
+       );
+       return;
+     }
 
-    // 2. Verificar validación rápida (solo errores de validación rápida)
-    if (!result.success) {
-      // Errores de validación rápida (sin media, URL inválida, etc.)
-      console.warn(`⚠️ Validación rápida fallida: ${result.message}`);
-      await sendWhatsAppMessage(
-        phoneNumber,
-        `⚠️ ${result.error}`
-      );
-      return;
-    }
+     
+   
+
 
 
     const mediaUrl = extractMediaUrl(message);
@@ -312,19 +301,28 @@ async function handleMediaMessage(
       await sendWhatsAppMessage(phoneNumber, responseMessage);
     } else {
       // ⚠️ ERROR: No es factura válida
-      const errorMessage = `⚠️ ${invoiceData.reason || 'No es una factura válida'}\n\nPor favor, envía una factura argentina.`;
+      const errorMessage = `⚠️ ${resultadoExtractData.reason || 'No es una factura válida'}\n\nPor favor, envía una factura argentina.`;
 
       // Logging del error
       console.log(`⚠️ Validación fallida:`, {
-        documentType: invoiceData.documentType,
-        fileInfo: invoiceData.fileInfo,
-        reason: invoiceData.reason
+        documentType: resultadoExtractData.documentType,
+        fileInfo: resultadoExtractData.fileInfo,
+        reason: resultadoExtractData.reason
       });
 
       await sendWhatsAppMessage(phoneNumber, errorMessage);
     }
 
+    // TODO : 1 Aqui realizaria el guardado del documento de kapso y tambien
+    //  const result: ProcessDocumentResult = await documentService.processDocument({
+    //   userId,
+    //   phoneNumber,
+    //   message
+    // });
   
+    // TODO: 2 
+    // procesaria la informacion de guardar la informacion del comprobante tambien se tendria que guardar 
+    // esta informacion en 2do plano 
 
   } catch (error) {
     console.error('❌ Error en handleMediaMessage:', error);

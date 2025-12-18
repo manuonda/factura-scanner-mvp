@@ -46,6 +46,7 @@ import {
   extractMimeType,
   extractFileSize,
   isMediaMessage,
+  type KapsoMediaMessage,
 } from '@/types/kapso.js';
 import { extractData, type InvoiceData } from '../ocr.js';
 import type { DocumentRepository } from '@/repositories/document.repository.js';
@@ -68,6 +69,47 @@ export class DocumentService {
   
   constructor(documentRepository: DocumentRepository) {
     this.documentRepository = documentRepository;
+  }
+
+  /**
+   * Valida un documento recibido
+   * @param message Mensaje de tipo media a validar
+   * @returns Resultado de la validación
+   */
+  async validateDocumento(
+    message: KapsoMediaMessage
+  ): Promise<ProcessDocumentResult> {
+      // Es de tipo media válida
+    if (!isMediaMessage(message)) {
+      return this.createErrorResult(
+        'El mensaje no contiene media válida',
+        DocumentProcessingStatus.FAILED_VALIDATION,
+        { code: 'NO_MEDIA', retryable: false }
+      );
+    }
+
+    // B. Extraer datos básicos
+    const mediaUrl = extractMediaUrl(message);
+    const mimeType = extractMimeType(message);
+    const fileSize = extractFileSize(message);
+
+    // Validar URL, Tipo y Tamaño (Todo en memoria)
+    const validation = this.validateDocument(mediaUrl, mimeType, fileSize);
+    
+    if (!validation.isValid) {
+      return this.createErrorResult(
+        validation.error || 'Documento inválido',
+        DocumentProcessingStatus.FAILED_VALIDATION,
+        { code: validation.errorCode ?? 'VALIDATION_ERROR', retryable: false }
+      );
+    }
+
+    return {
+      success: true,
+      documentId: message.id,
+      status: DocumentProcessingStatus.PENDING,
+      message: 'Documento en procesamiento',
+    };
   }
 
   /**
@@ -158,8 +200,9 @@ export class DocumentService {
      
 
       // ============================================
-      // BUSCAR DUPLICADOS (puede tardar, consultando BD)
-      // ============================================
+      // TODO: Implementar lógica para buscar documentos duplicados
+      // Verificamos si el documento ya fue procesado y esta correcto es decir 
+      // no esta en estado PENDING o ERROR pero por numero de factura tendria que ser      
       const existing = await this.documentRepository.findExistingDocument(messageId);
       if (existing) {
         console.log(`ℹ️ [BACKGROUND] Documento ya procesado: ${existing.id}`);
