@@ -19,7 +19,10 @@
       public updated_at: Date,
       public last_activity: Date,
       public preferences: Record<string, any> = {},
-      public metadata: Record<string, any> = {}
+      public metadata: Record<string, any> = {},
+      public googleSheetId: string | null = null,
+      public googleSheetUrl: string | null = null,
+      public sheetCreatedAt: Date | null = null
     ) {}
 
     // Métodos simples de lógica de negocio

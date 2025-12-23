@@ -50,6 +50,7 @@ import {
 } from '@/types/kapso.js';
 import { extractData, type InvoiceData } from '../ocr.js';
 import type { DocumentRepository } from '@/repositories/document.repository.js';
+import { GoogleSheetService } from './google-sheet.service.js';
 
 /**
  * Configuración de reintentos por defecto
@@ -66,9 +67,11 @@ const DEFAULT_RETRY_CONFIG: RetryConfig = {
  */
 export class DocumentService {
   private documentRepository: DocumentRepository;
-  
+  private googleSheetService: GoogleSheetService;
+
   constructor(documentRepository: DocumentRepository) {
     this.documentRepository = documentRepository;
+    this.googleSheetService = new GoogleSheetService();
   }
 
   /**
@@ -478,7 +481,31 @@ export class DocumentService {
       console.log(`   ✅ Resultado guardado en BD: ${finalStatus}`);
 
       // ============================================
-      // 3. TODO: GUARDAR ARCHIVO DESCARGADO (opcional)
+      // 3. GUARDAR EN GOOGLE SHEETS DEL USUARIO
+      // ============================================
+      if (invoiceData.isInvoice) {
+        try {
+          // Buscar el spreadsheetId del usuario
+          const user = await prisma.user.findUnique({
+            where: { id: userId },
+            select: { googleSheetId: true },
+          });
+
+          if (user?.googleSheetId) {
+            console.log(`   📊 Guardando en Google Sheet del usuario...`);
+            await this.googleSheetService.appendInvoiceRow(user.googleSheetId, invoiceData);
+            console.log(`   ✅ Fila agregada a Google Sheet`);
+          } else {
+            console.log(`   ℹ️ El usuario aún no tiene Google Sheet creado`);
+          }
+        } catch (sheetError) {
+          console.error(`   ⚠️ Error guardando en Google Sheet:`, sheetError);
+          // No detener el flujo por error en Google Sheets
+        }
+      }
+
+      // ============================================
+      // 4. TODO: GUARDAR ARCHIVO DESCARGADO (opcional)
       // ============================================
       // En el futuro, guardar en /uploads/{documentId}.pdf
       // Por ahora, solo guardamos en BD

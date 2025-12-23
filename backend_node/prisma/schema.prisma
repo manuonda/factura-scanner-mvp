@@ -39,6 +39,10 @@ model User {
   // Relación con documentos procesados
   documents     DocumentProcessing[]
 
+  googleSheetId String?    @map("google_sheet_id") //Id del Sheet Personal 
+  googleSheetUrl String?   @map("google_sheet_url") // Url Complte
+  sheetCreatedAt DateTime? @map("sheet_created_at")
+
   @@map("users")
 }
 

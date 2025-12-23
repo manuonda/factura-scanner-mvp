@@ -1,6 +1,7 @@
 import type { CreateUserDTO } from "@/dtos/user.dto.js";
 import type { UserRepository } from "@/repositories/user.repository.js";
 import type { User } from "@/domain/user.js";
+import { GoogleDriveService } from "./google-drive.service.js";
 
 // Estados del flujo de usuario
 export type RegistrationState = 'NEW' | 'INCOMPLETE' | 'READY';
@@ -17,8 +18,11 @@ export interface UserProcessingResult {
 }
 
 export class UserService {
+    private googleDriveService: GoogleDriveService;
+
     constructor(private userRepository: UserRepository) {
         this.userRepository = userRepository;
+        this.googleDriveService = new GoogleDriveService();
     }
 
     /**
@@ -128,6 +132,21 @@ export class UserService {
             };
         }
 
+           if (!user.googleSheetId) {
+            console.log('   → Usuario completo pero falta Google Sheet, creando...');
+            const sheetResult = await this.onRegistrationComplete(phoneNumber);
+            
+            // Recargamos el usuario para devolverlo con el ID del sheet actualizado
+            const updatedUser = await this.userRepository.findByPhoneNumber(phoneNumber);
+
+            return {
+                state: 'READY',
+                user: updatedUser || user,
+                message: sheetResult.message,
+                nextStep: 'complete'
+            };
+        }
+
         // 4. Usuario listo para procesar facturas
         console.log('   → Usuario listo para procesar');
         return {
@@ -221,5 +240,56 @@ export class UserService {
             nextStep: nextStep,
             message: this.getRegistrationMessage(nextStep, updatedUser.name || undefined)
         };
+    }
+
+    /**
+     * Crea el Google Sheet personal del usuario cuando completa el registro
+     * @param phoneNumber - Número del usuario
+     * @returns Link a su Google Sheet personal
+     */
+    async onRegistrationComplete(phoneNumber: string): Promise<{
+        message: string;
+        sheetUrl: string;
+    }> {
+        try {
+            console.log(`📊 Creando Google Sheet para usuario: ${phoneNumber}`);
+
+            // 1. Obtener usuario
+            const user = await this.userRepository.findByPhoneNumber(phoneNumber);
+            if (!user) throw new Error('Usuario no encontrado');
+
+            if (!user.email) throw new Error('Usuario no tiene email');
+
+            // 2. Crear Sheet en Google Drive
+            console.log(`🔄 Creando copia de plantilla para ${user.name}...`);
+            const { spreadsheetId, webViewLink } = await this.googleDriveService.createUserSheet(
+                user.name || 'Usuario',
+                user.email
+            );
+
+            // 3. Guardar IDs en la BD
+            const updateData = {
+                googleSheetId: spreadsheetId,
+                googleSheetUrl: webViewLink
+            };
+
+            await this.userRepository.updateByPhoneNumber(phoneNumber, updateData as any);
+            console.log(`✅ Sheet creado y guardado en BD: ${spreadsheetId}`);
+
+            // 4. Retornar mensaje con el link
+            const message =
+                `🎉 *¡Planilla Creada!*\n\n` +
+                `Tu Google Sheet personal está listo:\n\n` +
+                `🔗 ${webViewLink}\n\n` +
+                `_Aquí se guardarán automáticamente tus comprobantes cuando los proceses._ ✨`;
+
+            return {
+                message,
+                sheetUrl: webViewLink
+            };
+        } catch (error) {
+            console.error('❌ Error creando Google Sheet:', error);
+            throw error;
+        }
     }
 } 

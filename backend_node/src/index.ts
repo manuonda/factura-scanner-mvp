@@ -24,6 +24,10 @@ import {
 } from './types/kapso.js';
 import { DocumentProcessingStatus, type ProcessDocumentResult } from './dtos/documento.dto.js';
 import type { User } from './domain/user.js';
+import { google } from 'googleapis';
+import * as fs from 'fs';
+import * as path from 'path';
+import { fileURLToPath } from 'url';
 
 
 const userRepository = new UserRepository();
@@ -49,7 +53,104 @@ app.get('/', (c) => {
     });
 });
 
+// ============================================
+// RUTA: OAuth2 Callback (GET)
+// Google redirecciona aquí después de autorizar
+// ============================================
+app.get('/oauth2callback', async (c) => {
+    try {
+        const code = c.req.query('code');
+        const error = c.req.query('error');
 
+        if (error) {
+            console.error(`❌ Error de autorización: ${error}`);
+            return c.html(`
+                <html>
+                    <body style="font-family: Arial; text-align: center; padding: 50px;">
+                        <h1>❌ Autorización rechazada</h1>
+                        <p>Error: ${error}</p>
+                    </body>
+                </html>
+            `, 400);
+        }
+
+        if (!code) {
+            return c.html(`
+                <html>
+                    <body style="font-family: Arial; text-align: center; padding: 50px;">
+                        <h1>❌ Código de autorización no encontrado</h1>
+                    </body>
+                </html>
+            `, 400);
+        }
+
+        console.log('🔐 Código de autorización recibido, intercambiando por tokens...');
+
+        // Crear cliente OAuth2
+        const oauth2Client = new google.auth.OAuth2(
+            process.env.GOOGLE_OAUTH_ID!,
+            process.env.GOOGLE_OAUTH_SECRET!,
+            'http://localhost:3000/oauth2callback'
+        );
+
+        // Intercambiar código por tokens
+        const { tokens } = await oauth2Client.getToken(code);
+        const refreshToken = tokens.refresh_token;
+
+        if (!refreshToken) {
+            console.error('❌ No se obtuvo refresh token');
+            return c.html(`
+                <html>
+                    <body style="font-family: Arial; text-align: center; padding: 50px;">
+                        <h1>❌ Error al obtener refresh token</h1>
+                    </body>
+                </html>
+            `, 400);
+        }
+
+        console.log('✅ Refresh token obtenido');
+        console.log(`🔑 Token: ${refreshToken.substring(0, 20)}...`);
+
+        // Guardar en .env
+        const envPath = path.join(process.cwd(), '.env');
+        let envContent = fs.readFileSync(envPath, 'utf-8');
+
+        const refreshTokenLine = `GOOGLE_REFRESH_TOKEN=${refreshToken}`;
+        const refreshTokenRegex = /^GOOGLE_REFRESH_TOKEN=.*$/m;
+
+        if (refreshTokenRegex.test(envContent)) {
+            envContent = envContent.replace(refreshTokenRegex, refreshTokenLine);
+        } else {
+            envContent += `\n${refreshTokenLine}`;
+        }
+
+        fs.writeFileSync(envPath, envContent);
+
+        console.log('✅ Refresh token guardado en .env');
+        console.log('\n🎉 ¡Setup OAuth2 completado!\n');
+
+        return c.html(`
+            <html>
+                <body style="font-family: Arial; text-align: center; padding: 50px;">
+                    <h1>✅ ¡Autorización completada!</h1>
+                    <p>El refresh token se ha guardado en <strong>.env</strong></p>
+                    <p>Ahora puedes usar OAuth2 en tu bot.</p>
+                </body>
+            </html>
+        `);
+
+    } catch (error) {
+        console.error('❌ Error en OAuth2 callback:', error);
+        return c.html(`
+            <html>
+                <body style="font-family: Arial; text-align: center; padding: 50px;">
+                    <h1>❌ Error en la autorización</h1>
+                    <p>${String(error)}</p>
+                </body>
+            </html>
+        `, 500);
+    }
+});
 
 // ============================================
 // RUTA 3: Webhook mensajes (POST)
@@ -162,6 +263,20 @@ async function processMessage(message: KapsoMessage, conversation?: any) {
       if (textContent.trim()) {
         const registrationResult = await userService.processRegistrationData(from, textContent);
         await sendWhatsAppMessage(from, registrationResult.message);
+
+        if(registrationResult.nextStep === 'complete') {
+          try {
+            console.log(`🎉 Registro completado para ${from}, creando Google Sheet...`);
+            const sheetResult = await userService.onRegistrationComplete(from);
+            await sendWhatsAppMessage(from, sheetResult.message);
+          }catch(error) {
+            console.error('❌ Error creando google sheet:', error);
+            await sendWhatsAppMessage(
+              from ,
+              "⚠️ Tu registro se completó, pero hubo un error al crear tu planilla. Por favor contacta al soporte."
+            )
+          }
+        }
         return;
       }
     }
