@@ -51,6 +51,8 @@ export class UserRepository {
         companyName: string;
         email: string;
         registrationComplete: boolean;
+        googleSheetId: string;
+        googleSheetUrl: string;
     }>): Promise<User> {
         try {
             const data = await prisma.user.update({

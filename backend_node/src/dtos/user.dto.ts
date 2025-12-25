@@ -5,11 +5,10 @@
  */
 export interface CreateUserDTO {
     phoneNumber: string;
-    name?: string;
+    userName?: string;
     companyName?: string;
     email?: string;
     planType?: 'free' | 'pro' | 'enterprise';
-    userName?: string;
 }
 
 

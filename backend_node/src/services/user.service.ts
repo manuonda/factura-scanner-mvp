@@ -2,6 +2,7 @@ import type { CreateUserDTO } from "@/dtos/user.dto.js";
 import type { UserRepository } from "@/repositories/user.repository.js";
 import type { User } from "@/domain/user.js";
 import { GoogleDriveService } from "./google-drive.service.js";
+import { REGISTRATION_MESSAGES } from "@/constants/messages.js";
 
 // Estados del flujo de usuario
 export type RegistrationState = 'NEW' | 'INCOMPLETE' | 'READY';
@@ -21,7 +22,6 @@ export class UserService {
     private googleDriveService: GoogleDriveService;
 
     constructor(private userRepository: UserRepository) {
-        this.userRepository = userRepository;
         this.googleDriveService = new GoogleDriveService();
     }
 
@@ -29,10 +29,10 @@ export class UserService {
      * Obtiene el siguiente paso del registro según qué información falta
      */
     private getNextRegistrationStep(user: User): RegistrationStep {
-        console.log(`   🔍 DEBUG getNextRegistrationStep - name: "${user.name}", company: "${user.company_name}", email: "${user.email}"`);
+        console.log(`   🔍 DEBUG getNextRegistrationStep - userName: "${user.userName}", company: "${user.companyName}", email: "${user.email}"`);
 
-        if (!user.name || user.name.trim() === '') return 'awaiting_name';
-        if (!user.company_name || user.company_name.trim() === '') return 'awaiting_company';
+        if (!user.userName || user.userName.trim() === '') return 'awaiting_name';
+        if (!user.companyName || user.companyName.trim() === '') return 'awaiting_company';
         if (!user.email || user.email.trim() === '') return 'awaiting_email';
         return 'complete';
     }
@@ -44,13 +44,14 @@ export class UserService {
         const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
         if (!email || email.trim() === '') {
+            console.log("El email no puede estar vacio");
             return { valid: false, error: 'El email no puede estar vacío' };
         }
 
         if (!emailRegex.test(email.trim())) {
             return {
                 valid: false,
-                error: '❌ Ese no parece un email válido.\n\nIntenta de nuevo (Ej: juan@empresa.com)'
+                error: REGISTRATION_MESSAGES.EMAIL_INVALID
             };
         }
 
@@ -59,32 +60,19 @@ export class UserService {
 
     /**
      * Genera el mensaje para el paso actual del registro
-     * Los mensajes están optimizados para ser claros, personales y menos robóticos
+     * Los mensajes están centralizados en constants/messages.ts
      */
     private getRegistrationMessage(step: RegistrationStep, userName?: string): string {
-        const messages: Record<RegistrationStep, string> = {
-            awaiting_name:
-                '👋 ¡Hola! Soy el asistente de *Factura Scanner*.\n\n' +
-                'Para comenzar a procesar tus facturas, necesito unos datos rápidos:\n\n' +
-                '1️⃣ *¿Cuál es tu nombre completo?*',
-
-            awaiting_company:
-                `2️⃣ ¡Genial, ${userName || 'amigo'}! ¿Cuál es el *nombre de tu empresa*?\n\n` +
-                'Lo usaremos para clasificar tus documentos.\n' +
-                '(Ej: Mi Empresa S.A.)',
-
-            awaiting_email:
-                '3️⃣ Por último, ¿me indicas tu *correo electrónico*?\n\n' +
-                'Aquí te enviaremos el enlace a tu planilla de Excel con los datos extraídos.\n' +
-                '(Ej: tu@email.com)',
-
-            complete:
-                '🎉 *¡Registro Completado!*\n\n' +
-                `¡Bienvenido ${userName || 'a Factura Scanner'}! 🚀\n\n` +
-                'Ahora puedes enviarme una *foto* o *PDF* de tus facturas y las procesaré automáticamente. 📸\n\n' +
-                '_Los datos se guardarán en tu planilla de Google Sheets_'
-        };
-        return messages[step];
+        switch (step) {
+            case 'awaiting_name':
+                return REGISTRATION_MESSAGES.AWAITING_NAME;
+            case 'awaiting_company':
+                return REGISTRATION_MESSAGES.AWAITING_COMPANY(userName || 'amigo');
+            case 'awaiting_email':
+                return REGISTRATION_MESSAGES.AWAITING_EMAIL;
+            case 'complete':
+                return REGISTRATION_MESSAGES.COMPLETE(userName || 'a Factura Scanner');
+        }
     }
 
     /**
@@ -114,7 +102,7 @@ export class UserService {
                 state: 'NEW',
                 user: user,
                 nextStep: nextStep,
-                message: this.getRegistrationMessage(nextStep, user.name || undefined)
+                message: this.getRegistrationMessage(nextStep, user.userName || undefined)
             };
         }
 
@@ -124,20 +112,24 @@ export class UserService {
         if (!user.canProcess()) {
             console.log('   → Registro incompleto, pidiendo información');
             const nextStep = this.getNextRegistrationStep(user);
+            console.log("Next step es:", nextStep);
             return {
                 state: 'INCOMPLETE',
                 user: user,
                 nextStep: nextStep,
-                message: this.getRegistrationMessage(nextStep, user.name || undefined)
+                message: this.getRegistrationMessage(nextStep, user.userName || undefined)
             };
         }
-
-           if (!user.googleSheetId) {
+        console.log('   → Usuario con registro completo', user);
+        if (!user.googleSheetId) {
             console.log('   → Usuario completo pero falta Google Sheet, creando...');
             const sheetResult = await this.onRegistrationComplete(phoneNumber);
-            
+
             // Recargamos el usuario para devolverlo con el ID del sheet actualizado
             const updatedUser = await this.userRepository.findByPhoneNumber(phoneNumber);
+
+            // TODO enviar email con el link al sheet
+            //this.emailService.sendRegistrationEmail(user.email, sheetResult.sheetUrl);
 
             return {
                 state: 'READY',
@@ -153,7 +145,7 @@ export class UserService {
             state: 'READY',
             user: user,
             nextStep: 'complete',
-            message: this.getRegistrationMessage('complete', user.name || undefined)
+            message: this.getRegistrationMessage('complete', user.userName || undefined)
         };
     }
 
@@ -180,13 +172,13 @@ export class UserService {
         // Procesar según el paso
         switch (currentStep) {
             case 'awaiting_name':
-                user.name = textMessage.trim();
-                console.log(`   → Nombre guardado: ${user.name}`);
+                user.userName = textMessage.trim();
+                console.log(`   ✅ Nombre guardado: ${user.userName}`);
                 break;
 
             case 'awaiting_company':
-                user.company_name = textMessage.trim();
-                console.log(`   → Empresa guardada: ${user.company_name}`);
+                user.companyName = textMessage.trim();
+                console.log(`   ✅ Empresa guardada: ${user.companyName}`);
                 break;
 
             case 'awaiting_email':
@@ -194,7 +186,8 @@ export class UserService {
                 const emailValidation = this.validateEmail(textMessage);
                 if (!emailValidation.valid) {
                     console.log(`   ❌ Email inválido: ${textMessage}`);
-                    // Retorna el paso actual sin avanzar
+                    console.log(`   📌 Razón: ${emailValidation.error}`);
+                    // Retorna el paso actual sin avanzar ni guardar cambios
                     return {
                         user: user,
                         nextStep: currentStep,
@@ -206,7 +199,7 @@ export class UserService {
                 break;
 
             case 'complete':
-                console.log('   → Registro ya completo');
+                console.log('   → Registro ya completo, ignorando input');
                 break;
         }
 
@@ -220,25 +213,25 @@ export class UserService {
             email: string;
             registrationComplete: boolean;
         }> = {
-            userName: user.name || '',
-            companyName: user.company_name || '',
+            userName: user.userName || '',
+            companyName: user.companyName || '',
             email: user.email || ''
         };
 
         // Si completó todos los datos, marcar como completo
         if (nextStep === 'complete') {
             updateData.registrationComplete = true;
-            console.log('   → Registro completado!');
+            console.log('   ✅ Registro completado!');
         }
 
         // Guardar cambios en la BD
         const updatedUser = await this.userRepository.updateByPhoneNumber(phoneNumber, updateData);
-        console.log('   → Datos guardados en la BD');
+        console.log(`   ✅ Datos guardados en la BD (paso: ${nextStep})`);
 
         return {
             user: updatedUser,
             nextStep: nextStep,
-            message: this.getRegistrationMessage(nextStep, updatedUser.name || undefined)
+            message: this.getRegistrationMessage(nextStep, updatedUser.userName || undefined)
         };
     }
 
@@ -261,27 +254,21 @@ export class UserService {
             if (!user.email) throw new Error('Usuario no tiene email');
 
             // 2. Crear Sheet en Google Drive
-            console.log(`🔄 Creando copia de plantilla para ${user.name}...`);
+            console.log(`🔄 Creando copia de plantilla para ${user.userName}...`);
             const { spreadsheetId, webViewLink } = await this.googleDriveService.createUserSheet(
-                user.name || 'Usuario',
+                user.userName || 'Usuario',
                 user.email
             );
 
             // 3. Guardar IDs en la BD
-            const updateData = {
+            await this.userRepository.updateByPhoneNumber(phoneNumber, {
                 googleSheetId: spreadsheetId,
                 googleSheetUrl: webViewLink
-            };
-
-            await this.userRepository.updateByPhoneNumber(phoneNumber, updateData as any);
+            });
             console.log(`✅ Sheet creado y guardado en BD: ${spreadsheetId}`);
 
             // 4. Retornar mensaje con el link
-            const message =
-                `🎉 *¡Planilla Creada!*\n\n` +
-                `Tu Google Sheet personal está listo:\n\n` +
-                `🔗 ${webViewLink}\n\n` +
-                `_Aquí se guardarán automáticamente tus comprobantes cuando los proceses._ ✨`;
+            const message = REGISTRATION_MESSAGES.SHEET_CREATED(webViewLink);
 
             return {
                 message,

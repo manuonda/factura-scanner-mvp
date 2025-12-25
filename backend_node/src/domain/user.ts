@@ -1,66 +1,73 @@
- /**
-   * Entidad User - Representa un usuario
-   * Lógica mínima de negocio
-   */
+/**
+ * Entidad User - Representa un usuario
+ * Lógica mínima de negocio
+ *
+ * NOTA: Todos los campos usan camelCase para alinearse con Prisma models
+ */
+export class User {
+  constructor(
+    public id: string,
+    public phoneNumber: string,
+    public userName: string | null,
+    public companyName: string | null,
+    public email: string | null,
+    public planType: 'free' | 'pro' | 'enterprise',
+    public status: 'active' | 'inactive' | 'banned',
+    public emailVerified: boolean,
+    public phoneVerified: boolean,
+    public registrationComplete: boolean,
+    public createdAt: Date,
+    public updatedAt: Date,
+    public lastActivity: Date,
+    public preferences: Record<string, any> = {},
+    public metadata: Record<string, any> = {},
+    public googleSheetId: string | null = null,
+    public googleSheetUrl: string | null = null,
+    public sheetCreatedAt: Date | null = null
+  ) {}
 
-  export class User {
-    constructor(
-      public id: string,
-      public phone_number: string,
-      public name: string | null,
-      public company_name: string | null,
-      public email: string | null,
-      public plan_type: 'free' | 'pro' | 'enterprise',
-      public status: 'active' | 'inactive' | 'banned',
-      public email_verified: boolean,
-      public phone_verified: boolean,
-      public registration_complete: boolean,
-      public created_at: Date,
-      public updated_at: Date,
-      public last_activity: Date,
-      public preferences: Record<string, any> = {},
-      public metadata: Record<string, any> = {},
-      public googleSheetId: string | null = null,
-      public googleSheetUrl: string | null = null,
-      public sheetCreatedAt: Date | null = null
-    ) {}
+  // Métodos simples de lógica de negocio
 
-    // Métodos simples de lógica de negocio
-
-    isActive(): boolean {
-      return this.status === 'active';
-    }
-
-    isVerified(): boolean {
-      return this.email_verified && this.phone_verified;
-    }
-
-    canProcess(): boolean {
-      return this.isActive() && this.registration_complete;
-    }
-
-    updateLastActivity(): void {
-      this.last_activity = new Date();
-    }
-
-    // Factory method para crear desde datos raw
-    static create(data: any): User {
-      return new User(
-        data.id,
-        data.phoneNumber || data.phone_number,
-        data.userName || data.user_name,        // Prisma devuelve userName, BD tiene user_name
-        data.companyName || data.company_name,
-        data.email,
-        data.planType || data.plan_type,
-        data.status,
-        data.emailVerified || data.email_verified,
-        data.phoneVerified || data.phone_verified,
-        data.registrationComplete || data.registration_complete,
-        data.createdAt || data.created_at,
-        data.updatedAt || data.updated_at,
-        data.lastActivity || data.last_activity,
-        data.preferences,
-        data.metadata
-      );
-    }
+  isActive(): boolean {
+    return this.status === 'active';
   }
+
+  isVerified(): boolean {
+    return this.emailVerified && this.phoneVerified;
+  }
+
+  canProcess(): boolean {
+    return this.isActive() && this.registrationComplete;
+  }
+
+  updateLastActivity(): void {
+    this.lastActivity = new Date();
+  }
+
+  /**
+   * Factory method para crear desde datos raw (Prisma)
+   * Ya Prisma devuelve camelCase, no necesita doble mapeo
+   */
+  static create(data: any): User {
+    return new User(
+      data.id,
+      data.phoneNumber,
+      data.userName,
+      data.companyName,
+      data.email,
+      data.planType,
+      data.status,
+      data.emailVerified,
+      data.phoneVerified,
+      data.registrationComplete,
+      data.createdAt,
+      data.updatedAt,
+      data.lastActivity,
+      data.preferences || {},
+      data.metadata || {},
+      data.googleSheetId,
+      data.googleSheetUrl,
+      data.sheetCreatedAt
+    );
+  }
+}
